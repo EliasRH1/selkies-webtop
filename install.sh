@@ -9,6 +9,11 @@ NOVNC_PORT=6080
 VNC_PORT=5901
 VNC_DISPLAY=:1
 DEBIAN_FRONTEND=noninteractive
+NEEDRESTART_MODE=a
+
+# Evita preguntas de needrestart/restart services
+sed -i 's/#\$nrconf{restart} = .i.;/\$nrconf{restart} = \"a\";/' /etc/needrestart/needrestart.conf 2>/dev/null || true
+sed -i 's/^#\?\\$nrconf{restart} = .*;/\$nrconf{restart} = \"a\";/' /etc/needrestart/needrestart.conf 2>/dev/null || true
 
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${GREEN}  noVNC + KDE Plasma + Cloudflare${NC}"
@@ -18,7 +23,9 @@ read -rp "Cloudflare Tunnel token (vacío para saltar): " CF_TOKEN
 
 log "Instalando KDE Plasma mínimo + VNC + noVNC..."
 apt-get update -qq
-apt-get install -y -qq kde-plasma-desktop plasma-workspace \
+apt-get install -y -qq \
+  -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+  kde-plasma-desktop plasma-workspace \
   tigervnc-standalone-server novnc dbus-x11 \
   --no-install-recommends
 
