@@ -21,12 +21,29 @@ echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━
 
 read -rp "Cloudflare Tunnel token (vacío para saltar): " CF_TOKEN
 
-log "Instalando KDE Plasma mínimo + VNC + noVNC..."
+log "Actualizando paquetes..."
 apt-get update -qq
+
+# Instalar tigervnc primero y configurar password, para evitar prompts
+log "Instalando TigerVNC..."
+apt-get install -y -qq tigervnc-standalone-server --no-install-recommends
+mkdir -p "$HOME/.vnc"
+cat > "$HOME/.vnc/xstartup" <<'EOF'
+#!/bin/bash
+unset SESSION_MANAGER DBUS_SESSION_BUS_ADDRESS
+export XDG_CURRENT_DESKTOP=KDE
+export XDG_SESSION_DESKTOP=KDE
+startplasma-x11 &
+EOF
+chmod +x "$HOME/.vnc/xstartup"
+# Pre-configurar password para evitar prompt interactivo
+printf '1234\n1234\n' | vncpasswd "$HOME/.vnc/passwd" >/dev/null 2>&1 || true
+chmod 600 "$HOME/.vnc/passwd"
+
+log "Instalando KDE Plasma + noVNC..."
 apt-get install -y -qq \
   -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-  kde-plasma-desktop plasma-workspace \
-  tigervnc-standalone-server novnc dbus-x11 \
+  kde-plasma-desktop plasma-workspace novnc dbus-x11 \
   --no-install-recommends
 
 # ── Cloudflared ────────────────────────────────────────────────────────────
@@ -38,20 +55,6 @@ if [ -n "$CF_TOKEN" ]; then
 fi
 
 # ── VNC ────────────────────────────────────────────────────────────────────
-mkdir -p "$HOME/.vnc"
-
-cat > "$HOME/.vnc/xstartup" <<'EOF'
-#!/bin/bash
-unset SESSION_MANAGER DBUS_SESSION_BUS_ADDRESS
-export XDG_CURRENT_DESKTOP=KDE
-export XDG_SESSION_DESKTOP=KDE
-startplasma-x11 &
-EOF
-chmod +x "$HOME/.vnc/xstartup"
-
-echo "1234" | vncpasswd -f > "$HOME/.vnc/passwd"
-chmod 600 "$HOME/.vnc/passwd"
-
 vncserver -kill "$VNC_DISPLAY" 2>/dev/null || true
 sleep 1
 vncserver "$VNC_DISPLAY" -geometry 1280x800 -depth 24 -localhost -PasswordFile "$HOME/.vnc/passwd"
