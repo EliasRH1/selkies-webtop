@@ -7,95 +7,169 @@ warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 err()  { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 
 NOVNC_PORT="${NOVNC_PORT:-6080}"
-CONFIG_DIR="${CONFIG_DIR:-$HOME/novnc-data}"
-COMPOSE_FILE="${COMPOSE_FILE:-$HOME/selkies-webtop/docker-compose.yml}"
-NETWORK="novnc-net"
+VNC_PORT="${VNC_PORT:-5901}"
+VNC_DISPLAY="${VNC_DISPLAY:-:1}"
+DEBIAN_FRONTEND=noninteractive
 
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}  noVNC Desktop + Cloudflare Tunnel${NC}"
+echo -e "${GREEN}  noVNC + Cloudflare Tunnel (sin Docker)${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-# ── Docker ──────────────────────────────────────────────────────────────────
-if ! command -v docker &>/dev/null; then
-  warn "Installing Docker..."
-  curl -fsSL https://get.docker.com | sh
-  sudo usermod -aG docker "$USER"
-  log "Docker installed. Re-login or run 'newgrp docker'."
-fi
+# ── Sistema actualizado ───────────────────────────────────────────────────
+log "Actualizando paquetes..."
+apt-get update -qq && apt-get upgrade -y -qq
 
-mkdir -p "$CONFIG_DIR" "$(dirname "$COMPOSE_FILE")"
+# ── Desktop + VNC + noVNC ─────────────────────────────────────────────────
+log "Instalando XFCE desktop, VNC server y noVNC..."
+apt-get install -y -qq \
+  xfce4 xfce4-goodies \
+  tigervnc-standalone-server \
+  novnc python3-websockify \
+  dbus-x11 x11-utils \
+  curl
 
-echo ""
-read -rp "Cloudflare Tunnel token (dejar vacío para saltar): " CF_TOKEN
-
-# ── docker-compose.yml ──────────────────────────────────────────────────────
-cat > "$COMPOSE_FILE" <<EOF
-services:
-  novnc:
-    image: dorowu/ubuntu-desktop-lxde-vnc:focal
-    container_name: novnc
-    restart: unless-stopped
-    environment:
-      - VNC_PASSWORD=  # opcional
-      - RESOLUTION=1280x800
-    ports:
-      - "127.0.0.1:${NOVNC_PORT}:80"
-    volumes:
-      - ${CONFIG_DIR}:/root
-    shm_size: "2gb"
-    networks:
-      - ${NETWORK}
-EOF
+# ── Cloudflared ────────────────────────────────────────────────────────────
+CF_TOKEN=""
+read -rp "Cloudflare Tunnel token (vacío para saltar): " CF_TOKEN
 
 if [ -n "$CF_TOKEN" ]; then
-  cat >> "$COMPOSE_FILE" <<EOF
-
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: cloudflared
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run
-    environment:
-      - TUNNEL_TOKEN=${CF_TOKEN}
-    networks:
-      - ${NETWORK}
-EOF
+  log "Instalando cloudflared..."
+  if ! command -v cloudflared &>/dev/null; then
+    curl -sSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+    chmod +x /usr/local/bin/cloudflared
+  fi
 fi
 
-cat >> "$COMPOSE_FILE" <<EOF
+# ── VNC password ───────────────────────────────────────────────────────────
+VNC_PASS="${VNC_PASS:-}"
+if [ -z "$VNC_PASS" ]; then
+  read -sp "Contraseña VNC (dejar vacío = solo localhost): " VNC_PASS
+  echo ""
+fi
 
-networks:
-  ${NETWORK}:
-    driver: bridge
+# ── Configurar VNC ─────────────────────────────────────────────────────────
+mkdir -p "$HOME/.vnc"
+
+cat > "$HOME/.vnc/config" <<EOF
+session=xfce4-session
+geometry=1280x800
+depth=24
+localhost
 EOF
 
-log "docker-compose.yml creado en ${COMPOSE_FILE}"
+cat > "$HOME/.vnc/xstartup" <<'XEOF'
+#!/bin/bash
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+startxfce4 &
+XEOF
+chmod +x "$HOME/.vnc/xstartup"
 
-log "Descargando imágenes..."
-docker compose -f "$COMPOSE_FILE" pull
+# ── Iniciar VNC ───────────────────────────────────────────────────────────
+log "Iniciando VNC server en display ${VNC_DISPLAY}..."
+vncserver -kill "$VNC_DISPLAY" 2>/dev/null || true
+sleep 1
 
-log "Iniciando servicios..."
-docker compose -f "$COMPOSE_FILE" up -d
+if [ -n "$VNC_PASS" ]; then
+  echo "$VNC_PASS" | vncpasswd -f > "$HOME/.vnc/passwd"
+  chmod 600 "$HOME/.vnc/passwd"
+  vncserver "$VNC_DISPLAY" -geometry 1280x800 -depth 24 -localhost -PasswordFile "$HOME/.vnc/passwd"
+else
+  vncserver "$VNC_DISPLAY" -geometry 1280x800 -depth 24 -localhost
+fi
+
+# ── Iniciar noVNC ─────────────────────────────────────────────────────────
+log "Iniciando noVNC proxy en puerto ${NOVNC_PORT}..."
+pkill -f websockify 2>/dev/null || true
+sleep 1
+
+/usr/share/novnc/utils/novnc_proxy \
+  --vnc localhost:${VNC_PORT} \
+  --listen ${NOVNC_PORT} \
+  &>/tmp/novnc.log &
+sleep 2
+
+# ── Crear systemd services ────────────────────────────────────────────────
+log "Creando servicios systemd..."
+
+# VNC service
+cat > /etc/systemd/system/vncserver@.service <<UNIT
+[Unit]
+Description=VNC server en display %i
+After=network.target
+
+[Service]
+Type=forking
+User=$USER
+ExecStart=/usr/bin/vncserver %i -geometry 1280x800 -depth 24 -localhost
+ExecStop=/usr/bin/vncserver -kill %i
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+# noVNC service
+cat > /etc/systemd/system/novnc.service <<UNIT
+[Description]
+Description=noVNC proxy
+
+[Service]
+Type=simple
+User=$USER
+ExecStart=/usr/share/novnc/utils/novnc_proxy --vnc localhost:${VNC_PORT} --listen ${NOVNC_PORT}
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable vncserver@${VNC_DISPLAY#:} novnc
+
+# ── Cloudflare Tunnel service ─────────────────────────────────────────────
+if [ -n "$CF_TOKEN" ]; then
+  log "Creando servicio cloudflared..."
+
+  cat > /etc/systemd/system/cloudflared.service <<UNIT
+[Unit]
+Description=Cloudflare Tunnel
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate run --token ${CF_TOKEN}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+  systemctl daemon-reload
+  systemctl enable cloudflared
+  systemctl start cloudflared
+fi
 
 # ── Done ────────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}  Listo!${NC}"
+echo -e "${GREEN}  Instalación completa!${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo "  Local: http://localhost:${NOVNC_PORT}"
+echo "  noVNC:  http://localhost:${NOVNC_PORT}"
 echo ""
 
 if [ -n "$CF_TOKEN" ]; then
   echo "  Cloudflare Tunnel activo."
   echo "  → En Zero Trust dashboard, añade Public Hostname:"
-  echo "    Service: http://novnc:80"
-  echo "    (novnc se resuelve dentro de la red Docker)"
-else
-  echo "  Sin Cloudflare. Para añadirlo después:"
-  echo "  1. Crea un tunnel en https://one.dash.cloudflare.com"
-  echo " 2. Vuelve a ejecutar este script con el token"
+  echo "    Subdomain: elijes.tu Dominio: tudominio.com"
+  echo "    Service:   http://localhost:${NOVNC_PORT}"
+  echo "    Tipo:      HTTP"
 fi
 echo ""
-echo "  Gestionar: docker compose -f ${COMPOSE_FILE} [up|down|logs|ps]"
+echo "  Servicios:"
+echo "    systemctl status vncserver@${VNC_DISPLAY#:}"
+echo "    systemctl status novnc"
+echo "    systemctl status cloudflared"
 echo ""
