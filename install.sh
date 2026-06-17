@@ -11,15 +11,16 @@ VNC_DISPLAY=:1
 DEBIAN_FRONTEND=noninteractive
 
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}  noVNC + Cloudflare VM Setup${NC}"
+echo -e "${GREEN}  noVNC + KDE Plasma + Cloudflare${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
 read -rp "Cloudflare Tunnel token (vacío para saltar): " CF_TOKEN
 
-log "Actualizando e instalando (xfce4 mínimo + VNC + noVNC)..."
+log "Instalando KDE Plasma mínimo + VNC + noVNC..."
 apt-get update -qq
-apt-get install -y -qq xfce4 xfce4-terminal tigervnc-standalone-server \
-  novnc dbus-x11 --no-install-recommends
+apt-get install -y -qq kde-plasma-desktop plasma-workspace \
+  tigervnc-standalone-server novnc dbus-x11 \
+  --no-install-recommends
 
 # ── Cloudflared ────────────────────────────────────────────────────────────
 if [ -n "$CF_TOKEN" ]; then
@@ -35,7 +36,9 @@ mkdir -p "$HOME/.vnc"
 cat > "$HOME/.vnc/xstartup" <<'EOF'
 #!/bin/bash
 unset SESSION_MANAGER DBUS_SESSION_BUS_ADDRESS
-startxfce4 &
+export XDG_CURRENT_DESKTOP=KDE
+export XDG_SESSION_DESKTOP=KDE
+startplasma-x11 &
 EOF
 chmod +x "$HOME/.vnc/xstartup"
 
@@ -107,7 +110,6 @@ UNIT
 fi
 
 # ── Fin ────────────────────────────────────────────────────────────────────
-IP=$(curl -s https://ifconfig.me || echo "localhost")
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${GREEN}  Listo!${NC}"
@@ -119,11 +121,10 @@ if [ -n "$CF_TOKEN" ]; then
   echo "  Cloudflare Tunnel activo."
   echo "  → Crea un Public Hostname HTTP apuntando a:"
   echo "    http://localhost:$NOVNC_PORT"
-  echo "    (sin TLS verify si usas HTTPS local)"
 fi
 echo ""
-echo -e "  ${YELLOW}Comandos útiles:${NC}"
-echo "  systemctl restart vncserver   # reiniciar VNC"
-echo "  systemctl restart novnc       # reiniciar noVNC"
-echo "  journalctl -u novnc -f        # ver logs"
+echo -e "  ${YELLOW}Comandos:${NC}"
+echo "  systemctl restart vncserver"
+echo "  systemctl restart novnc"
+echo "  journalctl -u novnc -f"
 echo ""
