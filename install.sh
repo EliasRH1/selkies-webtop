@@ -49,9 +49,12 @@ startplasma-x11 &
 EOF
 chmod +x "$HOME/.vnc/xstartup"
 
+echo "1234" | vncpasswd -f > "$HOME/.vnc/passwd"
+chmod 600 "$HOME/.vnc/passwd"
+
 vncserver -kill "$VNC_DISPLAY" 2>/dev/null || true
 sleep 1
-vncserver "$VNC_DISPLAY" -geometry 1280x800 -depth 24 -localhost
+vncserver "$VNC_DISPLAY" -geometry 1280x800 -depth 24 -localhost -PasswordFile "$HOME/.vnc/passwd"
 sleep 2
 
 # ── noVNC ──────────────────────────────────────────────────────────────────
@@ -71,7 +74,8 @@ After=network.target
 [Service]
 Type=forking
 User=$USER
-ExecStart=/usr/bin/vncserver $VNC_DISPLAY -geometry 1280x800 -depth 24 -localhost
+ExecStartPre=/usr/bin/vncserver -kill $VNC_DISPLAY
+ExecStart=/usr/bin/vncserver $VNC_DISPLAY -geometry 1280x800 -depth 24 -localhost -PasswordFile $HOME/.vnc/passwd
 ExecStop=/usr/bin/vncserver -kill $VNC_DISPLAY
 Restart=on-failure
 
